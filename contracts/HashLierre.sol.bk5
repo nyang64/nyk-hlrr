@@ -1,0 +1,353 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.28;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+
+/// @title Hash Lierre ERC20 token with staking, adjustable APR, emergency unstake, and auto-restake rewards
+/// @author Nyk Labs, Jan 2026, all rights reserved
+/// @notice Users can stake hlrr tokens to earn APR-based rewards
+/// @dev Tokens use 8 decimals. Rewards are calculated lazily and auto-restaked. MAX_SUPPLY = 80,000,000 HLRR
+contract HashLierre is ERC20, Ownable, ReentrancyGuard {
+    /// @notice Number of decimals used in this token (8)
+    uint8 public constant DECIMALS_8 = 8;
+    /// @notice Maximum token supply (120 million HLRR)
+    uint256 public constant MAX_SUPPLY = 120_000_000 * 1e8; // 120M tokens
+    /// @notice Minimum staking lock period (2 weeks)
+    uint256 public constant MIN_STAKE_PERIOD = 14 days;
+    /// @notice Staking information for each user
+    struct StakeInfo {
+        uint256 amount;         // Staked tokens (base unit)
+        uint256 rewardDebt;     // Accumulated rewards not yet claimed/restaked
+        uint256 lastUpdate;     // Last reward calculation timestamp
+        uint256 stakeTimestamp; // Initial stake timestamp
+    }
+
+    /// @notice Mapping from user address to their staking info
+    mapping(address => StakeInfo) public stakes;
+    /// @notice Total amount of tokens staked in contract
+    uint256 public totalStaked;
+
+    /// @notice True if staking is paused
+    bool public stakingPaused = false;
+    /// @notice True if emergency mode is enabled
+    bool public emergencyMode = false;
+
+    /// @notice APR stored as basis points (e.g., 12% = 1200, representing 12.00%)
+    uint256 public apr = 1200;
+
+    /// @notice Merkle root for airdrop verification
+    bytes32 public merkleRoot;
+    /// @notice Tracks whether an address has claimed their airdrop
+    mapping(address => bool) public airdropClaimed; 
+
+    event Minted(address indexed to, uint256 amount, string tag);
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount);
+    event RewardClaimed(address indexed user, uint256 amount);
+    event StakingPaused(bool paused);
+    event APRUpdated(uint256 newApr);
+    event EmergencyMode(bool enabled);
+    event EmergencyUnstake(address indexed user, uint256 amount);
+    event MerkleRootSet(bytes32 indexed merkleRoot);
+    event AirdropClaimed(address indexed user, uint256 amount);
+
+    constructor() ERC20("Hashed Lierre", "hlrr") Ownable(msg.sender) {}
+
+    function decimals() public pure override returns (uint8) {
+        return DECIMALS_8;
+    }
+
+    // ===============================
+    // Mint
+    // ===============================
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyOwner {
+        require(receiver != address(0), "Cannot mint to zero");
+        require(amount > 0, "Amount must be > 0");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Mint exceeds max supply");
+
+        _mint(receiver, amount);
+        emit Minted(receiver, amount, tag);
+    }
+
+    // ===============================
+    // Staking
+    // ===============================
+    function stake(uint256 amount) external nonReentrant {
+        require(!stakingPaused, "Staking paused");
+        require(!emergencyMode, "Staking disabled in emergency mode");
+        require(amount > 0, "Cannot stake 0");
+
+        _updateRewards(msg.sender);
+
+        _transfer(msg.sender, address(this), amount);
+
+        // Auto-restake pending rewards
+        uint256 pending = stakes[msg.sender].rewardDebt;
+        if (pending > 0) {
+            require(totalSupply() + pending <= MAX_SUPPLY, "Reward exceeds max supply");
+            stakes[msg.sender].amount += pending;
+            stakes[msg.sender].rewardDebt = 0;
+        }
+
+        stakes[msg.sender].amount += amount;
+        stakes[msg.sender].stakeTimestamp = block.timestamp;
+        totalStaked += amount;
+
+        emit Staked(msg.sender, amount + pending);
+    }
+
+    function unstake(uint256 amount) external nonReentrant {
+        StakeInfo storage s = stakes[msg.sender];
+
+        if (!emergencyMode) {
+            require(block.timestamp >= s.stakeTimestamp + MIN_STAKE_PERIOD, "Stake locked");
+        }
+
+        _updateRewards(msg.sender);
+        require(amount > 0 && amount <= s.amount, "Invalid unstake");
+
+        s.amount -= amount;
+        totalStaked -= amount;
+
+        _transfer(address(this), msg.sender, amount);
+
+        emit Unstaked(msg.sender, amount);
+    }
+
+    function claimReward() external nonReentrant {
+        require(!emergencyMode, "Claims disabled in emergency mode");
+        
+        _updateRewards(msg.sender);
+
+        uint256 reward = stakes[msg.sender].rewardDebt;
+        require(reward > 0, "No reward");
+        require(totalSupply() + reward <= MAX_SUPPLY, "Reward exceeds max supply");
+
+        stakes[msg.sender].amount += reward;
+        stakes[msg.sender].rewardDebt = 0;
+
+        emit RewardClaimed(msg.sender, reward);
+    }
+
+    /// @notice Emergency unstake - returns principal only, forfeits all rewards
+    /// @dev Can be called anytime, bypasses lock period and reward claims
+    function emergencyUnstake() external nonReentrant {
+        require(emergencyMode, "Emergency mode not enabled");
+        StakeInfo storage s = stakes[msg.sender];
+        require(s.amount > 0, "No stake to unstake");
+
+        uint256 amount = s.amount;
+        
+        // Clear stake and forfeit rewards
+        s.amount = 0;
+        s.rewardDebt = 0;
+        s.lastUpdate = block.timestamp;
+        totalStaked -= amount;
+
+        _transfer(address(this), msg.sender, amount);
+
+        emit EmergencyUnstake(msg.sender, amount);
+    }
+
+    // ===============================
+    // Reward calculation
+    // ===============================
+    function _updateRewards(address user) internal {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) {
+            s.lastUpdate = block.timestamp;
+            return;
+        }
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        // reward = principal * (apr / 10000) * (elapsed / seconds_in_year)
+        // Rearranged: (principal * apr * elapsed) / (10000 * 365 days)
+        uint256 reward = (s.amount * apr * elapsed) / (10000 * 365 days);
+
+        s.rewardDebt += reward;
+        s.lastUpdate = block.timestamp;
+    }
+
+    function pendingReward(address user) external view returns (uint256) {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) return s.rewardDebt;
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * apr * elapsed) / (10000 * 365 days);
+        return s.rewardDebt + reward;
+    }
+
+    function stakedBalance(address user) external view returns (uint256) {
+        return stakes[user].amount;
+    }
+
+    // ===============================
+    // Owner functions
+    // ===============================
+    function setAPR(uint256 newApr) external onlyOwner {
+        apr = newApr;
+        emit APRUpdated(newApr);
+    }
+
+    function pauseStaking(bool paused) external onlyOwner {
+        stakingPaused = paused;
+        emit StakingPaused(paused);
+    }
+
+    function enableEmergency(bool enabled) external onlyOwner {
+        emergencyMode = enabled;
+        emit EmergencyMode(enabled);
+    }
+
+    // ===============================
+    // Merkle Airdrop Functions
+    // ===============================
+
+    /// @notice Set the merkle root for airdrop claims
+    /// @param _merkleRoot The merkle root hash
+    function setMerkleRoot(bytes32 _merkleRoot) external onlyOwner {
+        merkleRoot = _merkleRoot;
+        emit MerkleRootSet(_merkleRoot);
+    }
+
+    /// @notice Claim airdrop tokens using merkle proof
+    /// @param amount Amount of tokens to claim
+    /// @param merkleProof Array of hashes for merkle proof verification
+    function claimAirdrop(uint256 amount, bytes32[] calldata merkleProof) external nonReentrant {
+        require(merkleRoot != bytes32(0), "Airdrop not initialized");
+        require(!airdropClaimed[msg.sender], "Already claimed");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+        
+        // Verify merkle proof
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(msg.sender, amount))));
+        require(MerkleProof.verify(merkleProof, merkleRoot, leaf), "Invalid proof");
+        
+        airdropClaimed[msg.sender] = true;
+        _mint(msg.sender, amount);
+        
+        emit AirdropClaimed(msg.sender, amount);
+    }
+
+    /// @notice Check if an address has claimed their airdrop
+    /// @param user Address to check
+    /// @return Whether the address has claimed
+    function hasClaimedAirdrop(address user) external view returns (bool) {
+        return airdropClaimed[user];
+    }
+
+    // ===============================
+    // Analytics & View Functions
+    // ===============================
+    
+    /// @notice Get the total value locked in the staking contract
+    /// @return totalStaked Total amount of tokens currently staked
+    function getTotalValueLocked() external view returns (uint256) {
+        return totalStaked;
+    }
+
+    /// @notice Calculate approximate APY (Annual Percentage Yield) considering daily compounding
+    /// @dev APY = (1 + daily_rate)^365 - 1, simplified for gas efficiency
+    /// @return APY in basis points (e.g., 1274 = 12.74%)
+    function getAPY() external view returns (uint256) {
+        // For daily compounding: APY ≈ APR + (APR² / 20000)
+        // This is a close approximation for typical APR values
+        return apr + ((apr * apr) / 20000);
+    }
+
+    /// @notice Get comprehensive statistics for a user's stake
+    /// @param user Address of the user
+    /// @return stakedAmount Current staked amount
+    /// @return pendingRewards Pending unclaimed rewards
+    /// @return stakingDuration How long tokens have been staked (seconds)
+    /// @return estimatedYearlyReward Estimated rewards for next 365 days at current APR
+    /// @return canUnstake Whether user can unstake now (lock period passed or emergency mode)
+    function getUserStats(address user) external view returns (
+        uint256 stakedAmount,
+        uint256 pendingRewards,
+        uint256 stakingDuration,
+        uint256 estimatedYearlyReward,
+        bool canUnstake
+    ) {
+        StakeInfo storage s = stakes[user];
+        stakedAmount = s.amount;
+        
+        // Calculate pending rewards
+        if (s.amount > 0) {
+            uint256 elapsed = block.timestamp - s.lastUpdate;
+            uint256 reward = (s.amount * apr * elapsed) / (10000 * 365 days);
+            pendingRewards = s.rewardDebt + reward;
+        } else {
+            pendingRewards = s.rewardDebt;
+        }
+        
+        stakingDuration = s.stakeTimestamp > 0 ? block.timestamp - s.stakeTimestamp : 0;
+        estimatedYearlyReward = (s.amount * apr) / 10000;
+        canUnstake = emergencyMode || (s.stakeTimestamp > 0 && block.timestamp >= s.stakeTimestamp + MIN_STAKE_PERIOD);
+    }
+
+    /// @notice Get global staking statistics
+    /// @return totalStakers Number of addresses with active stakes
+    /// @return averageStakeAmount Average stake size
+    /// @return totalRewardsDistributed Approximate total rewards distributed (based on minted supply)
+    function getGlobalStats() external view returns (
+        uint256 totalStakers,
+        uint256 averageStakeAmount,
+        uint256 totalRewardsDistributed
+    ) {
+        // Note: totalStakers would require tracking in a production version
+        // For now, returning 0 as we don't track unique stakers
+        totalStakers = 0; // Would need additional storage to track this
+        
+        averageStakeAmount = 0; // Would need staker count
+        
+        // Approximate rewards = total minted - initial supply
+        // This is a rough estimate
+        totalRewardsDistributed = 0; // Would need to track minting sources
+    }
+
+    /// @notice Calculate potential rewards for a given amount and duration
+    /// @param amount Amount to stake
+    /// @param durationSeconds Duration in seconds
+    /// @return Estimated reward amount
+    function calculatePotentialReward(uint256 amount, uint256 durationSeconds) external view returns (uint256) {
+        return (amount * apr * durationSeconds) / (10000 * 365 days);
+    }
+
+    /// @notice Get time remaining until user can unstake
+    /// @param user Address of the user
+    /// @return Time remaining in seconds (0 if can already unstake)
+    function getTimeUntilUnstake(address user) external view returns (uint256) {
+        StakeInfo storage s = stakes[user];
+        
+        if (s.stakeTimestamp == 0) return 0;
+        if (emergencyMode) return 0;
+        
+        uint256 unlockTime = s.stakeTimestamp + MIN_STAKE_PERIOD;
+        if (block.timestamp >= unlockTime) return 0;
+        
+        return unlockTime - block.timestamp;
+    }
+
+    /// @notice Get contract configuration
+    /// @return currentAPR in basis points
+    /// @return maxSupply max supply
+    /// @return minStakePeriod minimum stake period in seconds
+    /// @return isStakingPaused Is staking paused
+    /// @return isEmergencyMode Is emergency mode enabled
+    function getContractConfig() external view returns (
+        uint256 currentAPR,
+        uint256 maxSupply,
+        uint256 minStakePeriod,
+        bool isStakingPaused,
+        bool isEmergencyMode
+    ) {
+        currentAPR = apr;
+        maxSupply = MAX_SUPPLY;
+        minStakePeriod = MIN_STAKE_PERIOD;
+        isStakingPaused = stakingPaused;
+        isEmergencyMode = emergencyMode;
+    }
+}

@@ -1,0 +1,56 @@
+{
+  "merkleRoot": "0xb497b760b34bb05714f1814e66eb54c53eb2de20bca55ca3e788a9fee33aad94",
+  "totalRecipients": 5,
+  "totalAmount": "260000000000",
+  "totalAmountFormatted": "2600.0",
+  "recipients": [
+    {
+      "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "amount": "100000000000",
+      "amountFormatted": "1000.0",
+      "proof": [
+        "0x6e517ff9fc942fba5dce8bdedf87f4681f82f9f893630423d3e9faae05c769bc",
+        "0x0fff1d4fb8d1359fa1953aea6b8108669fc2712665fc0af404ffab8113f082b4",
+        "0x6b8bf3346f78545cc44a421846df17c5185d0eb26fe1fafba0b6a7b6f05cf1ca"
+      ]
+    },
+    {
+      "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+      "amount": "50000000000",
+      "amountFormatted": "500.0",
+      "proof": [
+        "0x0e481ea65144f8d1e50d5acc5d9af40210f0580eb7f030cf407860b0e7c527a9",
+        "0x0fff1d4fb8d1359fa1953aea6b8108669fc2712665fc0af404ffab8113f082b4",
+        "0x6b8bf3346f78545cc44a421846df17c5185d0eb26fe1fafba0b6a7b6f05cf1ca"
+      ]
+    },
+    {
+      "address": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+      "amount": "25000000000",
+      "amountFormatted": "250.0",
+      "proof": [
+        "0x26a61d2ed440ad60a16a8e555084028ad545ebd61bfe93746a5b538de7a95aaf",
+        "0x117975a8372e60e7da15dfd6c518f770203ac77a3a3109bf6d931851bac16347",
+        "0x6b8bf3346f78545cc44a421846df17c5185d0eb26fe1fafba0b6a7b6f05cf1ca"
+      ]
+    },
+    {
+      "address": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
+      "amount": "10000000000",
+      "amountFormatted": "100.0",
+      "proof": [
+        "0xda44d6161033b997e469dca501dcd5a00d484a9cf139fc85ea0c1855c220f196",
+        "0x117975a8372e60e7da15dfd6c518f770203ac77a3a3109bf6d931851bac16347",
+        "0x6b8bf3346f78545cc44a421846df17c5185d0eb26fe1fafba0b6a7b6f05cf1ca"
+      ]
+    },
+    {
+      "address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+      "amount": "75000000000",
+      "amountFormatted": "750.0",
+      "proof": [
+        "0x63dc755aa381846de291e6ff37421ad81f2b49d4eddea6e64b494f7c9df1720c"
+      ]
+    }
+  ]
+}

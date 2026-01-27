@@ -1,0 +1,27 @@
+npx hardhat run scripts/deploy.js --network sepolia --tag "initial mint" --amount 10000000 --artifact HashLierre
+npx hardhat run scripts/mint.js --network sepolia --tag "mint extra" --amount 1000000 --token-address 0x...
+npx hardhat run scripts/stake.js --network sepolia --amount 1000 --token-address 0x...
+npx hardhat run scripts/claim.js --network sepolia --token-address 0x...
+npx hardhat run scripts/pause.js --network sepolia --pause true --token-address 0x...
+npx hardhat run scripts/setAPR.js --network sepolia --apr 150000000000000000
+
+
+npx hardhat hl-deploy --network sepolia --amount 10000000 --tag "initial mint" 
+Deployed at: 0x991A6D9Fd89d6764f9ea2A1965e3fb44346B974F
+Minted 10000000 hlrr with tag genesis
+
+npx hardhat hl-mint --network sepolia --amount 10000000 --tag "extra" --token 0xAB..
+
+npx hardhat hl-stake --network sepolia --token 0xABC... --amount 1000
+
+npx hardhat hl-claim --network sepolia --token 0xABC...
+
+npx hardhat hl-set-apr --network sepolia --token 0xABC... --apr 150000000000000000
+
+npx hardhat hl-pause --network sepolia --token 0xABC... --paused true
+
+npx hardhat hl-emergency --network sepolia --token 0xABC... --enabled true
+
+npx hardhat hl-info --network sepolia --token 0xABC... --user 0xYourWallet
+
+

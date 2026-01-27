@@ -1,0 +1,41 @@
+import { task } from "hardhat/config";
+
+//task("hl-deploy", "Deploy HashLierre and optionally mint", {
+//       amount: {
+//          type: "string",
+//          description: "Initial mint amount (whole tokens, no decimals)",
+//       },
+//       tag: {
+//          type: "string",
+//          description: "Deployment tag",
+//          default: "genesis",
+//       },
+//    }, async (args, hre) => {
+task("hl-deploy", "Deploy HashLierre and mint an initial amount")
+  .addOptionalParam("amount", "Amount (no decimals)", "0")
+  .addOptionalParam("tag", "mint tag", "genesis" )
+  .setAction(async (args, hre) => {
+    const { ethers } = hre;
+
+    const Token = await ethers.getContractFactory("HashLierre");
+    const token = await Token.deploy();
+    await token.waitForDeployment();
+
+    const addr = await token.getAddress();
+    console.log("HashLierre deployed to:", addr);
+
+    const [signer] = await ethers.getSigners();
+
+    const amount = BigInt(args.amount) * 10n ** 18n;
+
+    const tx = await token.mint(
+      await signer.getAddress(),
+      amount,
+      args.tag
+    );
+
+    await tx.wait();
+
+    console.log("Minted", args.amount, "H#L");
+  });
+

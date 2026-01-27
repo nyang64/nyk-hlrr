@@ -1,0 +1,195 @@
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("HashLierre", function () {
+  let token;
+  let owner, alice, bob;
+
+  const ONE = ethers.BigNumber.from("1000000000000000000"); ;
+  const YEAR = 365 * 24 * 60 * 60;
+
+  async function increaseTime(seconds) {
+    await network.provider.send("evm_increaseTime", [seconds]);
+    await network.provider.send("evm_mine");
+  }
+
+  beforeEach(async () => {
+    [owner, alice, bob] = await ethers.getSigners();
+
+    const Factory = await ethers.getContractFactory("HashLierre");
+    token = await Factory.deploy();
+    await token.deployed();
+
+    // Mint initial supply to Alice
+    await token.mint(alice.address, ethers.BigNumber.from("10000000000000000000000000000"), "genesis");
+  });
+
+  // ===============================
+  // Minting
+  // ===============================
+
+  it("owner can mint, non-owner cannot", async () => {
+    await expect(
+      token.connect(alice).mint(alice.address, ONE, "hack")
+    ).to.be.reverted;
+
+    await token.mint(bob.address, ONE, "ok");
+    expect(await token.balanceOf(bob.address)).to.equal(ONE);
+  });
+
+  // ===============================
+  // Staking
+  // ===============================
+
+  it("user can stake tokens", async () => {
+    await token.connect(alice).approve(token.address,  ONE);
+    await token.connect(alice).stake( ONE);
+
+    const info = await token.stakes(alice.address);
+    expect(info.amount).to.equal( ONE);
+  });
+
+  // ===============================
+  // Reward Accrual
+  // ===============================
+
+  it("accrues ~12% APR over 1 year", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await increaseTime(YEAR);
+
+    const pending = await token.pendingReward(alice.address);
+
+    // 12% of 1000 = 120
+    const expected = 120n * ONE;
+
+    // allow small rounding drift
+    expect(pending).to.be.closeTo(expected, 1n * ONE / 1000n);
+  });
+
+  // ===============================
+  // Claim Rewards
+  // ===============================
+
+  it("claim mints reward tokens", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await increaseTime(YEAR);
+
+    const before = await token.balanceOf(alice.address);
+    await token.connect(alice).claimReward();
+    const after = await token.balanceOf(alice.address);
+
+    expect(after - before).to.be.closeTo(120n * ONE, 1n * ONE / 1000n);
+  });
+
+  // ===============================
+  // APR Change
+  // ===============================
+
+  it("APR change affects future rewards only", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    // 6 months at 12%
+    await increaseTime(YEAR / 2);
+
+    // Set APR to 24%
+    await token.setAPR(24n * 10n ** 16n);
+
+    // Another 6 months
+    await increaseTime(YEAR / 2);
+
+    const reward = await token.pendingReward(alice.address);
+
+    // 1000 * 12% * 0.5 = 60
+    // 1000 * 24% * 0.5 = 120
+    // Total ≈ 180
+    expect(reward).to.be.closeTo(180n * ONE, 2n * ONE / 100n);
+  });
+
+  // ===============================
+  // Unstaking
+  // ===============================
+
+  it("cannot unstake before lock period", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await expect(
+      token.connect(alice).unstake(100n * ONE)
+    ).to.be.revertedWith("Stake locked");
+  });
+
+  it("unstaking does not lose rewards", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await increaseTime(YEAR);
+
+    await increaseTime(14 * 24 * 60 * 60); // pass lock
+
+    const pendingBefore = await token.pendingReward(alice.address);
+
+    await token.connect(alice).unstake(500n * ONE);
+
+    const pendingAfter = await token.pendingReward(alice.address);
+
+    expect(pendingAfter).to.be.closeTo(pendingBefore, 1n * ONE / 1000n);
+  });
+
+  // ===============================
+  // Pause staking
+  // ===============================
+
+  it("pause blocks staking", async () => {
+    await token.pauseStaking(true);
+
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+
+    await expect(
+      token.connect(alice).stake(1000n * ONE)
+    ).to.be.revertedWith("Staking paused");
+  });
+
+  // ===============================
+  // Emergency unstake
+  // ===============================
+
+  it("emergency unstake returns funds without rewards", async () => {
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await increaseTime(YEAR);
+
+    const before = await token.balanceOf(alice.address);
+    await token.connect(alice).emergencyUnstake();
+    const after = await token.balanceOf(alice.address);
+
+    // Should get principal back, but no rewards
+    expect(after - before).to.equal(1000n * ONE);
+  });
+
+  // ===============================
+  // Max supply protection
+  // ===============================
+
+  it("cannot exceed max supply via rewards", async () => {
+    const max = await token.MAX_SUPPLY();
+
+    // mint near max
+    await token.mint(owner.address, max - (await token.totalSupply()), "cap");
+
+    await token.connect(alice).approve(token.address, 1000n * ONE);
+    await token.connect(alice).stake(1000n * ONE);
+
+    await increaseTime(YEAR * 10);
+
+    await expect(
+      token.connect(alice).claimReward()
+    ).to.be.revertedWith("Reward exceeds max supply");
+  });
+});
+

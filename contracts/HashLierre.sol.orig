@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.33;
+
+/// @title Hash Lierre - ERC20-style mintable token with metadata tags
+/// @author Nanchang Yang
+/// @notice Owner (minter) can mint new coins, anyone can transfer coins
+contract HashLierre {
+    // ======== Metadata ========
+    string public name = "Hash Lierre";     // Token name
+    string public symbol = "l#r";        // Token symbol
+    uint8 public decimals = 18;          // Standard ERC20 decimals
+
+    // ======== State ========
+    address public immutable minter;     // Only minter can mint new coins
+    mapping(address => uint256) public balances;
+    mapping(address => mapping(address => uint256)) public allowance; // ERC20 allowance
+
+    // ======== Events ========
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Minted(address indexed to, uint256 amount, string tag);
+    event Deployed(address indexed minter);
+
+    // ======== Modifiers ========
+    modifier onlyMinter() {
+        require(msg.sender == minter, "Only minter can call this function");
+        _;
+    }
+
+    // ======== Constructor ========
+    constructor() {
+        minter = msg.sender;
+        emit Deployed(minter);
+    }
+
+    // ======== Mint Function ========
+    /// @notice Mints new coins to a receiver
+    /// @param receiver Wallet to receive the coins
+    /// @param amount Amount of coins (in smallest unit, i.e., 10^decimals)
+    /// @param tag Optional string to describe why coins were minted
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyMinter {
+        require(receiver != address(0), "Cannot mint to zero address");
+        require(amount > 0, "Amount must be > 0");
+
+        balances[receiver] += amount;
+        emit Minted(receiver, amount, tag);
+        emit Transfer(address(0), receiver, amount); // ERC20 style
+    }
+
+    // ======== Transfer Function ========
+    /// @notice Transfer coins to another wallet
+    function transfer(address receiver, uint256 amount) external returns (bool) {
+        require(receiver != address(0), "Cannot send to zero address");
+        require(amount <= balances[msg.sender], "Insufficient balance");
+
+        balances[msg.sender] -= amount;
+        balances[receiver] += amount;
+
+        emit Transfer(msg.sender, receiver, amount);
+        return true;
+    }
+
+    // ======== ERC20 Allowance Functions ========
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(to != address(0), "Cannot send to zero address");
+        require(amount <= balances[from], "Insufficient balance");
+        require(amount <= allowance[from][msg.sender], "Allowance exceeded");
+
+        balances[from] -= amount;
+        balances[to] += amount;
+        allowance[from][msg.sender] -= amount;
+
+        emit Transfer(from, to, amount);
+        return true;
+    }
+}
+

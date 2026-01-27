@@ -1,0 +1,81 @@
+import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
+import { configVariable, defineConfig } from "hardhat/config";
+import hardhatEthers from "@nomicfoundation/hardhat-ethers";
+
+//import "./tasks/hashlierre-deploy.ts";
+//import "./tasks/hashlierre-mint.js";
+//import "./tasks/hashlierre-stake.js";
+//import "./tasks/hashlierre-unstake.js";
+//import "./tasks/hashlierre-claim.js";
+//import "./tasks/hashlierre-set-apr.js";
+//import "./tasks/hashlierre-pause.js";
+//import "./tasks/hashlierre-emergency.js";
+//import "./tasks/hashlierre-info.js";
+
+export default defineConfig({
+  plugins: [hardhatEthers, hardhatToolboxMochaEthersPlugin],
+  solidity: {
+    profiles: {
+      default: {
+        version: "0.8.28",
+      },
+      production: {
+        version: "0.8.28",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
+      },
+    },
+  },
+  networks: {
+    hardhatMainnet: {
+      type: "edr-simulated",
+      chainType: "l1",
+    },
+    hardhatOp: {
+      type: "edr-simulated",
+      chainType: "op",
+    },
+    sepolia: {
+      type: "http",
+      chainType: "l1",
+      url: configVariable("SEPOLIA_RPC_URL"),
+      accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
+    },
+    localArbitrumL2: {
+      type: "http",  // Standard HTTP RPC connection
+      url: "http://localhost:8547",  // L2 RPC endpoint from your local node
+      chainId: 412346,  // Default chain ID for local Arbitrum test node
+      accounts: [
+        // Use a pre-funded private key from your test-node.bash logs (e.g., the sequencer or validator key)
+        // Example: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        // Store in .env and load via configVariable("LOCAL_PRIVATE_KEY") for security
+        configVariable("LOCAL_PRIVATE_KEY"),
+      ],
+      gas: "auto",  // Optional: Auto-estimate gas (local nodes have high limits)
+      gasPrice: "auto",  // Optional: Use auto for local (cheap/free gas)
+    },
+    localEthereumL1: {
+      type: "http",
+      chainType: "l1",
+      url: "http://localhost:8545",  // L1 RPC endpoint from your local node
+      chainId: 1337,  // Default chain ID for local L1
+      accounts: [configVariable("LOCAL_PRIVATE_KEY")],  // Same key as above (funded on both layers)
+    },
+    arbitrumOne: {
+        type: "http",
+        url: "https://arb1.arbitrum.io/rpc",
+        chainId: 42161,
+        accounts: [configVariable("ARB_PRIVATE_KEY")],
+    },
+    arbitrumOneSepolia: {
+        type: "http",
+        url: "https://sepolia-rollup.arbitrum.io/rpc",
+        chainId: 421614,
+        accounts: [configVariable("ARB_PRIVATE_KEY")],
+    },    
+  },
+});

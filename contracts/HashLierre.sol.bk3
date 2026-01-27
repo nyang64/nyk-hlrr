@@ -1,0 +1,190 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.28;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+/// @title Hash Lierre ERC20 token with staking, adjustable APR, emergency unstake, and auto-restake rewards
+/// @author Nanchang Yang
+/// @notice Users can stake hlrr tokens to earn APR-based rewards
+/// @dev Fully ERC20-compatible, DEX-ready, gas-efficient staking with lazy reward calculation
+contract HashLierre is ERC20, Ownable, ReentrancyGuard {
+    // ======== Configurable Constants ========
+    uint256 public constant MAX_SUPPLY = 50_000_000 * 1e18; // 50 million H#L max supply
+    uint256 public constant MIN_STAKE_PERIOD = 14 days;    // Minimum lock period for staked tokens
+
+    // ======== Staking state ========
+    /// @dev Stores staking information for each user
+    struct StakeInfo {
+        uint256 amount;          // Tokens staked
+        uint256 rewardDebt;      // Rewards accumulated but not yet claimed/restaked
+        uint256 lastUpdate;      // Last timestamp for reward calculation
+        uint256 stakeTimestamp;  // Initial stake timestamp
+    }
+
+    mapping(address => StakeInfo) public stakes;
+    uint256 public totalStaked;
+
+    // ======== Staking control flags ========
+    bool public stakingPaused = false;   // Stops new stakes if true
+    bool public emergencyMode = false;   // Allows unstake bypassing minimum period
+
+    // ======== Adjustable APR ========
+    /// @notice Annual Percentage Rate for staking rewards (1e18 scale)
+    uint256 public apr = 12 * 1e16; // default 12%
+
+    // ======== Events ========
+    event Minted(address indexed to, uint256 amount, string tag);
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount);
+    event RewardClaimed(address indexed user, uint256 amount);
+    event StakingPaused(bool paused);
+    event APRUpdated(uint256 newApr);
+    event EmergencyMode(bool enabled);
+
+    // ======== Constructor ========
+    /// @notice Deploys the Hash Lierre token and sets the owner as deployer
+    constructor() ERC20("Hashed Lierre", "hlrr") Ownable(msg.sender) {}
+
+    // ======== ERC20 mint function ========
+    /// @notice Mints new H#L tokens to a specified wallet
+    /// @dev Owner-only function, respects MAX_SUPPLY cap
+    /// @param receiver Address to receive minted tokens
+    /// @param amount Amount of tokens to mint (in wei, 10^18 units)
+    /// @param tag Optional string describing reason for mint
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyOwner {
+        require(receiver != address(0), "Cannot mint to zero address");
+        require(amount > 0, "Amount must be > 0");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Mint exceeds max supply");
+
+        _mint(receiver, amount);
+        emit Minted(receiver, amount, tag);
+    }
+
+    // ======== Staking functions ========
+    /// @notice Stake H#L tokens to earn APR rewards
+    /// @dev Rewards are lazily calculated and auto-restaked
+    /// @param amount Amount of tokens to stake
+    function stake(uint256 amount) external nonReentrant {
+        require(!stakingPaused, "Staking is paused");
+        require(amount > 0, "Cannot stake 0");
+
+        _updateRewards(msg.sender);
+
+        _transfer(msg.sender, address(this), amount);
+
+        // Auto-restake pending rewards
+        uint256 pending = stakes[msg.sender].rewardDebt;
+        if (pending > 0) {
+            require(totalSupply() + pending <= MAX_SUPPLY, "Reward exceeds max supply");
+            stakes[msg.sender].amount += pending;
+            stakes[msg.sender].rewardDebt = 0;
+        }
+
+        stakes[msg.sender].amount += amount;
+        stakes[msg.sender].stakeTimestamp = block.timestamp;
+        totalStaked += amount;
+
+        emit Staked(msg.sender, amount + pending);
+    }
+
+    /// @notice Unstake previously staked tokens
+    /// @dev Respects MIN_STAKE_PERIOD unless emergencyMode is enabled
+    /// @param amount Amount of tokens to unstake
+    function unstake(uint256 amount) external nonReentrant {
+        StakeInfo storage s = stakes[msg.sender];
+
+        if (emergencyMode) {
+            _updateRewards(msg.sender);
+        } else {
+            require(block.timestamp >= s.stakeTimestamp + MIN_STAKE_PERIOD, "Stake locked 2 weeks");
+            _updateRewards(msg.sender);
+        }
+
+        require(amount > 0 && amount <= s.amount, "Invalid unstake");
+
+        s.amount -= amount;
+        totalStaked -= amount;
+
+        _transfer(address(this), msg.sender, amount);
+
+        emit Unstaked(msg.sender, amount);
+    }
+
+    /// @notice Claim staking rewards and automatically restake them
+    /// @dev Lazy reward calculation is used to save gas
+    function claimReward() external nonReentrant {
+        _updateRewards(msg.sender);
+
+        uint256 reward = stakes[msg.sender].rewardDebt;
+        require(reward > 0, "No reward");
+        require(totalSupply() + reward <= MAX_SUPPLY, "Reward exceeds max supply");
+
+        // Auto-restake reward
+        stakes[msg.sender].amount += reward;
+        stakes[msg.sender].rewardDebt = 0;
+
+        emit RewardClaimed(msg.sender, reward);
+    }
+
+    // ======== Internal reward calculation ========
+    /// @dev Updates rewardDebt for a user based on elapsed time
+    /// @param user Address of the staker
+    function _updateRewards(address user) internal {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) {
+            s.lastUpdate = block.timestamp;
+            return;
+        }
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * apr * elapsed) / 365 days / 1e18;
+
+        s.rewardDebt += reward;
+        s.lastUpdate = block.timestamp;
+    }
+
+    // ======== View functions ========
+    /// @notice Returns the pending reward for a user (not yet restaked)
+    /// @param user Address of the staker
+    /// @return reward Amount of pending rewards
+    function pendingReward(address user) external view returns (uint256) {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) return s.rewardDebt;
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * apr * elapsed) / 365 days / 1e18;
+        return s.rewardDebt + reward;
+    }
+
+    /// @notice Returns staked balance for a user
+    /// @param user Address of the staker
+    /// @return amount Tokens currently staked
+    function stakedBalance(address user) external view returns (uint256) {
+        return stakes[user].amount;
+    }
+
+    // ======== Owner control functions ========
+    /// @notice Updates staking APR
+    /// @param newApr New APR in 1e18 scale
+    function setAPR(uint256 newApr) external onlyOwner {
+        apr = newApr;
+        emit APRUpdated(newApr);
+    }
+
+    /// @notice Pause or resume staking
+    /// @param paused True to pause staking, false to resume
+    function pauseStaking(bool paused) external onlyOwner {
+        stakingPaused = paused;
+        emit StakingPaused(paused);
+    }
+
+    /// @notice Enable or disable emergency mode
+    /// @param enabled True to allow emergency unstake
+    function enableEmergency(bool enabled) external onlyOwner {
+        emergencyMode = enabled;
+        emit EmergencyMode(enabled);
+    }
+}
+

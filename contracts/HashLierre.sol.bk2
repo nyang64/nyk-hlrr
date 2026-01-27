@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.28;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+/// @title Hash Lierre ERC20 token with staking rewards and max supply
+/// @notice Owner can mint new coins; users can stake for H#L rewards
+contract HashLierre is ERC20, Ownable, ReentrancyGuard {
+    // ======== Constants ========
+    uint256 public constant APR = 12 * 1e16; // 12% APR in 1e18 scale
+    uint256 public constant MIN_STAKE_PERIOD = 14 days;
+    uint256 public constant MAX_SUPPLY = 50_000_000 * 1e18; // 50 million H#L
+
+    // ======== Events ========
+    event Minted(address indexed to, uint256 amount, string tag);
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount);
+    event RewardClaimed(address indexed user, uint256 amount);
+
+    // ======== Staking state ========
+    struct StakeInfo {
+        uint256 amount;          // tokens staked
+        uint256 rewardDebt;      // rewards already accounted
+        uint256 lastUpdate;      // last timestamp for reward calculation
+        uint256 stakeTimestamp;  // initial stake time
+    }
+
+    mapping(address => StakeInfo) public stakes;
+    uint256 public totalStaked;
+
+    // ======== Constructor ========
+    constructor() ERC20("Hashed Lierre", "H#L") Ownable(msg.sender) {}
+
+    // ======== ERC20 mint ========
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyOwner {
+        require(receiver != address(0), "Cannot mint to zero address");
+        require(amount > 0, "Amount must be > 0");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Mint exceeds max supply");
+
+        _mint(receiver, amount);
+        emit Minted(receiver, amount, tag);
+    }
+
+    // ======== Staking Functions ========
+
+    function stake(uint256 amount) external nonReentrant {
+        require(amount > 0, "Cannot stake 0");
+
+        _updateRewards(msg.sender);
+
+        // Transfer tokens to contract
+        _transfer(msg.sender, address(this), amount);
+
+        stakes[msg.sender].amount += amount;
+        stakes[msg.sender].stakeTimestamp = block.timestamp;
+        totalStaked += amount;
+
+        emit Staked(msg.sender, amount);
+    }
+
+    function unstake(uint256 amount) external nonReentrant {
+        StakeInfo storage s = stakes[msg.sender];
+        require(amount > 0 && amount <= s.amount, "Invalid unstake");
+        require(block.timestamp >= s.stakeTimestamp + MIN_STAKE_PERIOD, "Stake locked for 2 weeks");
+
+        _updateRewards(msg.sender);
+
+        s.amount -= amount;
+        totalStaked -= amount;
+
+        _transfer(address(this), msg.sender, amount);
+
+        emit Unstaked(msg.sender, amount);
+    }
+
+    function claimReward() external nonReentrant {
+        _updateRewards(msg.sender);
+
+        uint256 reward = stakes[msg.sender].rewardDebt;
+        require(reward > 0, "No reward");
+        require(totalSupply() + reward <= MAX_SUPPLY, "Reward exceeds max supply");
+
+        stakes[msg.sender].rewardDebt = 0;
+
+        _mint(msg.sender, reward);
+
+        emit RewardClaimed(msg.sender, reward);
+    }
+
+    // ======== Internal reward calculation ========
+    function _updateRewards(address user) internal {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) {
+            s.lastUpdate = block.timestamp;
+            return;
+        }
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * APR * elapsed) / 365 days / 1e18;
+
+        s.rewardDebt += reward;
+        s.lastUpdate = block.timestamp;
+    }
+
+    // ======== View functions ========
+    function pendingReward(address user) external view returns (uint256) {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) return s.rewardDebt;
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * APR * elapsed) / 365 days / 1e18;
+        return s.rewardDebt + reward;
+    }
+
+    function stakedBalance(address user) external view returns (uint256) {
+        return stakes[user].amount;
+    }
+}
+

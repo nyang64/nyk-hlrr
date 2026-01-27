@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.28;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+/// @title Hash Lierre ERC20 token with staking, adjustable APR, emergency unstake, and auto-restake rewards
+/// @notice Uses token units with 8 decimals
+contract HashLierre is ERC20, Ownable, ReentrancyGuard {
+    uint8 private constant DECIMALS = 8;
+
+    // ======== Configurable Constants ========
+    uint256 public constant MAX_SUPPLY = 50_000_000 * 10 ** DECIMALS; // 50M tokens
+    uint256 public constant MIN_STAKE_PERIOD = 14 days;
+
+    // ======== Staking ========
+    struct StakeInfo {
+        uint256 amount;         // tokens (8 decimals)
+        uint256 rewardDebt;     // pending reward
+        uint256 lastUpdate;     // last reward timestamp
+        uint256 stakeTimestamp; // initial stake timestamp
+    }
+
+    mapping(address => StakeInfo) public stakes;
+    uint256 public totalStaked;
+
+    // ======== Control flags ========
+    bool public stakingPaused = false;
+    bool public emergencyMode = false;
+
+    // ======== Adjustable APR (e.g., 12% = 12e6 for 8 decimals) ========
+    uint256 public apr = 12_000_000; // 12% scaled by 1e6
+
+    // ======== Events ========
+    event Minted(address indexed to, uint256 amount, string tag);
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount);
+    event RewardClaimed(address indexed user, uint256 amount);
+    event StakingPaused(bool paused);
+    event APRUpdated(uint256 newApr);
+    event EmergencyMode(bool enabled);
+
+    // ======== Constructor ========
+    //constructor() ERC20("Hashed Lierre", "hlrr") {}
+    constructor() ERC20("Hashed Lierre", "hlrr") Ownable(msg.sender) {}
+
+    function decimals() public pure override returns (uint8) {
+        return DECIMALS;
+    }
+
+    // ======== Mint ========
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyOwner {
+        require(receiver != address(0), "Cannot mint to zero");
+        require(amount > 0, "Amount must be > 0");
+        require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
+
+        _mint(receiver, amount);
+        emit Minted(receiver, amount, tag);
+    }
+
+    // ======== Stake ========
+    function stake(uint256 amount) external nonReentrant {
+        require(!stakingPaused, "Staking paused");
+        require(amount > 0, "Cannot stake 0");
+
+        _updateRewards(msg.sender);
+
+        _transfer(msg.sender, address(this), amount);
+
+        // Auto-restake pending rewards
+        uint256 pending = stakes[msg.sender].rewardDebt;
+        if (pending > 0) {
+            require(totalSupply() + pending <= MAX_SUPPLY, "Reward exceeds max supply");
+            stakes[msg.sender].amount += pending;
+            stakes[msg.sender].rewardDebt = 0;
+        }
+
+        stakes[msg.sender].amount += amount;
+        stakes[msg.sender].stakeTimestamp = block.timestamp;
+        totalStaked += amount;
+
+        emit Staked(msg.sender, amount + pending);
+    }
+
+    // ======== Unstake ========
+    function unstake(uint256 amount) external nonReentrant {
+        StakeInfo storage s = stakes[msg.sender];
+        require(amount > 0 && amount <= s.amount, "Invalid unstake");
+
+        if (!emergencyMode) {
+            require(block.timestamp >= s.stakeTimestamp + MIN_STAKE_PERIOD, "Stake locked");
+        }
+
+        _updateRewards(msg.sender);
+
+        s.amount -= amount;
+        totalStaked -= amount;
+        _transfer(address(this), msg.sender, amount);
+
+        emit Unstaked(msg.sender, amount);
+    }
+
+    // ======== Claim Rewards ========
+    function claimReward() external nonReentrant {
+        _updateRewards(msg.sender);
+
+        uint256 reward = stakes[msg.sender].rewardDebt;
+        require(reward > 0, "No reward");
+        require(totalSupply() + reward <= MAX_SUPPLY, "Reward exceeds max supply");
+
+        // Auto-restake reward
+        stakes[msg.sender].amount += reward;
+        stakes[msg.sender].rewardDebt = 0;
+
+        emit RewardClaimed(msg.sender, reward);
+    }
+
+    // ======== Reward Calculation ========
+    function _updateRewards(address user) internal {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) {
+            s.lastUpdate = block.timestamp;
+            return;
+        }
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+
+        // reward = amount * apr * elapsed / (365 days) / 1e8
+        uint256 reward = (s.amount * apr * elapsed) / (365 days * 1_000_000);
+
+        s.rewardDebt += reward;
+        s.lastUpdate = block.timestamp;
+    }
+
+    // ======== Views ========
+    function pendingReward(address user) external view returns (uint256) {
+        StakeInfo storage s = stakes[user];
+        if (s.amount == 0) return s.rewardDebt;
+
+        uint256 elapsed = block.timestamp - s.lastUpdate;
+        uint256 reward = (s.amount * apr * elapsed) / (365 days * 1_000_000);
+        return s.rewardDebt + reward;
+    }
+
+    function stakedBalance(address user) external view returns (uint256) {
+        return stakes[user].amount;
+    }
+
+    // ======== Owner functions ========
+    function setAPR(uint256 newApr) external onlyOwner {
+        apr = newApr;
+        emit APRUpdated(newApr);
+    }
+
+    function pauseStaking(bool paused) external onlyOwner {
+        stakingPaused = paused;
+        emit StakingPaused(paused);
+    }
+
+    function enableEmergency(bool enabled) external onlyOwner {
+        emergencyMode = enabled;
+        emit EmergencyMode(enabled);
+    }
+}
+

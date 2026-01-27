@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity 0.8.28;
+
+/// @title Hash Lierre - ERC20 mintable token with metadata tags
+/// @author Nanchang Yang
+/// @notice Owner (minter) can mint new coins, anyone can transfer coins
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract HashLierre is ERC20, Ownable {
+    // ======== Events ========
+    event Minted(address indexed to, uint256 amount, string tag);
+
+    /// @notice Constructor: sets token name/symbol and transfers ownership
+    constructor() ERC20("Hash Lierre", "L#R") Ownable(msg.sender) {
+        //transferOwnership(msg.sender); // Ownable sets minter
+    }
+
+    // ======== Mint Function ========
+    /// @notice Mint new coins to a receiver with optional metadata tag
+    /// @param receiver Wallet to receive the coins
+    /// @param amount Amount of coins in smallest units (10^decimals)
+    /// @param tag Optional string describing why coins were minted
+    function mint(address receiver, uint256 amount, string calldata tag) external onlyOwner {
+        require(receiver != address(0), "Cannot mint to zero address");
+        require(amount > 0, "Amount must be > 0");
+
+        _mint(receiver, amount);
+        emit Minted(receiver, amount, tag);
+    }
+
+    // ======== Optional: Safe Approve & Increase/Decrease Allowance ========
+    // Already handled by ERC20: approve(), transferFrom(), allowance()
+    // ERC20 emits Transfer and Approval events automatically
+}
+

@@ -1,0 +1,22 @@
+import { ethers } from "ethers";
+
+async function main() {
+    const [deployer] = await ethers.getSigners();
+
+    const tokenAddress = "YOUR_DEPLOYED_CONTRACT_ADDRESS_HERE"; // replace after deploy
+    const hashLierre = await ethers.getContractAt("HashLierre", tokenAddress);
+
+    const mintAmount = ethers.parseUnits("10000000", 18); // 10M tokens
+    const tag = "Initial mint to deployer";
+
+    const tx = await hashLierre.mint(deployer.address, mintAmount, tag);
+    await tx.wait();
+
+    const balance = await hashLierre.balanceOf(deployer.address);
+    console.log("Deployer token balance:", ethers.formatUnits(balance, 18));
+}
+
+main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});
