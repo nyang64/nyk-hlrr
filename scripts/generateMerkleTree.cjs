@@ -1,3 +1,6 @@
+// Generate Merkle Tree for Airdrop
+// Usage: npx hardhat run scripts/generateMerkleTree.cjs
+
 const { MerkleTree } = require('merkletreejs');
 const keccak256 = require('keccak256');
 const { ethers } = require('hardhat');
@@ -17,6 +20,7 @@ async function generateMerkleTree() {
 
   // Example airdrop list - Replace with your actual recipients
   // Format: { address: "0x...", amount: "amount_in_base_units" }
+  // Note: HashLierre uses 8 decimals!
   const airdropList = [
     { address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', amount: ethers.utils.parseUnits('1000', 8).toString() }, // 1000 tokens
     { address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', amount: ethers.utils.parseUnits('500', 8).toString() },  // 500 tokens
@@ -96,28 +100,6 @@ async function generateMerkleTree() {
   return output;
 }
 
-// Helper function to load airdrop list from CSV
-async function loadFromCSV(csvPath) {
-  const csv = require('csv-parser');
-  const results = [];
-
-  return new Promise((resolve, reject) => {
-    fs.createReadStream(csvPath)
-      .pipe(csv())
-      .on('data', (data) => {
-        // Expecting CSV with columns: address, amount
-        results.push({
-          address: data.address,
-          amount: ethers.utils.parseUnits(data.amount, 8).toString(),
-        });
-      })
-      .on('end', () => {
-        resolve(results);
-      })
-      .on('error', reject);
-  });
-}
-
 // Run if called directly
 if (require.main === module) {
   generateMerkleTree()
@@ -128,4 +110,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { generateMerkleTree, loadFromCSV };
+module.exports = { generateMerkleTree };

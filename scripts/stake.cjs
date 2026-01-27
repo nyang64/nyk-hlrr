@@ -1,5 +1,5 @@
 // Stake HLRR tokens
-// Usage: npx hardhat run scripts/stake.js --network <network-name>
+// Usage: npx hardhat run scripts/stake.cjs --network <network-name>
 //
 // Configure these values before running:
 
@@ -7,7 +7,7 @@ const hre = require("hardhat");
 const { ethers } = require("hardhat");
 
 // ====== CONFIGURATION ======
-const TOKEN_ADDRESS = "0x..."; // Replace with your deployed contract address
+const TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"; // Replace with your deployed contract address
 const STAKE_AMOUNT = 1000; // Amount in tokens (will be multiplied by decimals)
 // ===========================
 

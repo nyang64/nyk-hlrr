@@ -1,5 +1,5 @@
 // Set APR (owner only)
-// Usage: npx hardhat run scripts/setAPR.js --network <network-name>
+// Usage: npx hardhat run scripts/setAPR.cjs --network <network-name>
 //
 // Configure these values before running:
 
@@ -7,7 +7,7 @@ const hre = require("hardhat");
 const { ethers } = require("hardhat");
 
 // ====== CONFIGURATION ======
-const TOKEN_ADDRESS = "0x..."; // Replace with your deployed contract address
+const TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"; // Replace with your deployed contract address
 const NEW_APR = 1000; // New APR in basis points (1000 = 10%)
 // ===========================
 

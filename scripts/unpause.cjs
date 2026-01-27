@@ -1,5 +1,5 @@
 // Pause/unpause staking (owner only)
-// Usage: npx hardhat run scripts/pause.js --network <network-name>
+// Usage: npx hardhat run scripts/pause.cjs --network <network-name>
 //
 // Configure these values before running:
 
@@ -7,8 +7,8 @@ const hre = require("hardhat");
 const { ethers } = require("hardhat");
 
 // ====== CONFIGURATION ======
-const TOKEN_ADDRESS = "0x..."; // Replace with your deployed contract address
-const PAUSE = true; // true to pause, false to unpause
+const TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"; // Replace with your deployed contract address
+const PAUSE = false; // true to pause, false to unpause
 // ===========================
 
 async function main() {

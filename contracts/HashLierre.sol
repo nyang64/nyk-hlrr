@@ -28,9 +28,9 @@ contract HashLierre is ERC20, Ownable, ReentrancyGuard {
     /// @notice Number of decimals used by the token (8)
     uint8 public constant DECIMALS_8 = 8;
 
-    /// @notice Maximum token supply: 40,000,000 HLRR per chain (120M total across 3 deployments)
-    /// @dev Base: 40M, BNB: 40M, Staking Rewards Reserve: 40M = 120M total
-    uint256 public constant MAX_SUPPLY = 40_000_000 * 1e8;
+    /// @notice Maximum token supply: 60,000,000 HLRR per chain (120M total across 2 deployments)
+    /// @dev Base: 40M, BNB: 40M, Staking Rewards Reserve: 20M on Base and 20M on BNB = 120M total
+    uint256 public constant MAX_SUPPLY = 60_000_000 * 1e8;
 
     /// @notice Minimum lock period for staking before normal unstake is allowed
     uint256 public constant MIN_STAKE_PERIOD = 14 days;

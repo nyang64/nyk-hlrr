@@ -1,5 +1,5 @@
-// Stake HLRR tokens
-// Usage: npx hardhat run scripts/stake.js --network <network-name>
+// Unstake HLRR tokens
+// Usage: npx hardhat run scripts/unstake.js --network <network-name>
 //
 // Configure these values before running:
 
@@ -8,11 +8,11 @@ const { ethers } = require("hardhat");
 
 // ====== CONFIGURATION ======
 const TOKEN_ADDRESS = "0x..."; // Replace with your deployed contract address
-const STAKE_AMOUNT = 1000; // Amount in tokens (will be multiplied by decimals)
+const UNSTAKE_AMOUNT = 500; // Amount in tokens (will be multiplied by decimals)
 // ===========================
 
 async function main() {
-  console.log("📈 Staking HLRR Tokens...\n");
+  console.log("📉 Unstaking HLRR Tokens...\n");
 
   if (TOKEN_ADDRESS === "0x...") {
     console.error("❌ Error: Please set TOKEN_ADDRESS in the script!");
@@ -21,7 +21,7 @@ async function main() {
 
   // Get signer
   const [signer] = await ethers.getSigners();
-  console.log("Staking from account:", signer.address);
+  console.log("Unstaking from account:", signer.address);
   console.log("");
 
   // Connect to contract
@@ -31,73 +31,72 @@ async function main() {
 
   // Get decimals
   const decimals = await token.decimals();
-  const amount = ethers.BigNumber.from(STAKE_AMOUNT).mul(
+  const amount = ethers.BigNumber.from(UNSTAKE_AMOUNT).mul(
     ethers.BigNumber.from(10).pow(decimals)
   );
 
-  console.log("Amount to stake:", STAKE_AMOUNT, "HLRR");
+  console.log("Amount to unstake:", UNSTAKE_AMOUNT, "HLRR");
   console.log("");
 
-  // Check balances before staking
-  const balance = await token.balanceOf(signer.address);
+  // Check current status
   const stakeInfo = await token.stakes(signer.address);
   const pending = await token.pendingReward(signer.address);
+  const balance = await token.balanceOf(signer.address);
 
-  console.log("Before Staking:");
+  console.log("Before Unstaking:");
   console.log("  Wallet Balance:", ethers.utils.formatUnits(balance, decimals), "HLRR");
   console.log("  Currently Staked:", ethers.utils.formatUnits(stakeInfo.amount, decimals), "HLRR");
   console.log("  Pending Rewards:", ethers.utils.formatUnits(pending, decimals), "HLRR");
   console.log("");
 
-  // Check if we have enough balance
-  if (balance.lt(amount)) {
-    console.error("❌ Error: Insufficient balance!");
-    console.error(`   Need: ${STAKE_AMOUNT} HLRR`);
-    console.error(`   Have: ${ethers.utils.formatUnits(balance, decimals)} HLRR`);
+  // Check if we have enough staked
+  if (stakeInfo.amount.lt(amount)) {
+    console.error("❌ Error: Insufficient staked amount!");
+    console.error(`   Want to unstake: ${UNSTAKE_AMOUNT} HLRR`);
+    console.error(`   Currently staked: ${ethers.utils.formatUnits(stakeInfo.amount, decimals)} HLRR`);
     process.exit(1);
   }
 
-  // Step 1: Approve contract to spend tokens
-  console.log("🔄 Step 1: Approving tokens...");
-  const approveTx = await token.approve(token.address, amount);
-  console.log("  Transaction hash:", approveTx.hash);
-  await approveTx.wait();
-  console.log("  ✅ Approved");
-  console.log("");
+  // Check lock period
+  const timeUntilUnstake = await token.getTimeUntilUnstake(signer.address);
+  const emergencyMode = await token.emergencyMode();
+  
+  if (timeUntilUnstake.gt(0) && !emergencyMode) {
+    const days = timeUntilUnstake.div(86400);
+    const hours = timeUntilUnstake.mod(86400).div(3600);
+    console.error("❌ Error: Tokens are still locked!");
+    console.error(`   Time remaining: ${days} days, ${hours} hours`);
+    console.error("");
+    console.error("   Options:");
+    console.error("   1. Wait for lock period to expire");
+    console.error("   2. Use emergencyUnstake (forfeits rewards)");
+    console.log("");
+    process.exit(1);
+  }
 
-  // Step 2: Stake tokens
-  console.log("🔄 Step 2: Staking tokens...");
-  const stakeTx = await token.stake(amount);
-  console.log("  Transaction hash:", stakeTx.hash);
+  // Execute unstake
+  console.log("🔄 Unstaking tokens...");
+  const tx = await token.unstake(amount);
+  console.log("  Transaction hash:", tx.hash);
   
   console.log("⏳ Waiting for confirmation...");
-  const receipt = await stakeTx.wait();
+  const receipt = await tx.wait();
   console.log("  ✅ Confirmed in block:", receipt.blockNumber);
   console.log("");
 
-  // Check balances after staking
+  // Check status after unstake
   const balanceAfter = await token.balanceOf(signer.address);
   const stakeInfoAfter = await token.stakes(signer.address);
   const tvl = await token.getTotalValueLocked();
 
-  console.log("After Staking:");
+  console.log("After Unstaking:");
   console.log("  Wallet Balance:", ethers.utils.formatUnits(balanceAfter, decimals), "HLRR");
   console.log("  Currently Staked:", ethers.utils.formatUnits(stakeInfoAfter.amount, decimals), "HLRR");
   console.log("  Total Value Locked:", ethers.utils.formatUnits(tvl, decimals), "HLRR");
   console.log("");
 
-  // Show lock information
-  const timeUntilUnstake = await token.getTimeUntilUnstake(signer.address);
-  if (timeUntilUnstake.gt(0)) {
-    const days = timeUntilUnstake.div(86400);
-    const hours = timeUntilUnstake.mod(86400).div(3600);
-    console.log("🔒 Lock Information:");
-    console.log(`   Time until unstake: ${days} days, ${hours} hours`);
-    console.log("");
-  }
-
-  console.log("✨ Staking Complete!");
-  console.log(`   Staked ${STAKE_AMOUNT} HLRR successfully`);
+  console.log("✨ Unstake Complete!");
+  console.log(`   Unstaked ${UNSTAKE_AMOUNT} HLRR successfully`);
   console.log("");
 }
 

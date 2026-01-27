@@ -515,7 +515,7 @@ describe("HashLierre", function () {
       const config = await token.getContractConfig();
 
       expect(config.currentAPR).to.equal(1200n);
-      expect(config.maxSupply).to.equal(40_000_000n * ONE);
+      expect(config.maxSupply).to.equal(60_000_000n * ONE);
       expect(config.minStakePeriod).to.equal(14n * 24n * 60n * 60n);
       expect(config.minStakeAmount).to.equal(100n * ONE);
       expect(config.maxAPR).to.equal(1200n); // 12%

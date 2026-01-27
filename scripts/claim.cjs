@@ -1,5 +1,5 @@
 // Claim staking rewards
-// Usage: npx hardhat run scripts/claim.js --network <network-name>
+// Usage: npx hardhat run scripts/claim.cjs --network <network-name>
 //
 // Configure these values before running:
 
@@ -7,7 +7,7 @@ const hre = require("hardhat");
 const { ethers } = require("hardhat");
 
 // ====== CONFIGURATION ======
-const TOKEN_ADDRESS = "0x..."; // Replace with your deployed contract address
+const TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"; // Replace with your deployed contract address
 // ===========================
 
 async function main() {

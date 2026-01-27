@@ -1,5 +1,5 @@
 // Deploy HashLierre contract using Hardhat + ethers v5
-// Usage: npx hardhat run scripts/deploy.js --network <network-name>
+// Usage: npx hardhat run scripts/deploy.cjs --network <network-name>
 
 const hre = require("hardhat");
 const { ethers } = require("hardhat");
