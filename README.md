@@ -1,3 +1,14 @@
+Uniswap launch steps:
+Deploy token
+Create pair
+setDex(router, pair)
+setWhitelist(yourWallet, true)
+setWhitelist(LPContract, true)
+Add liquidity (PRIVATE TX) from owner's wallet or whitelisted wallet
+enableTrading() (PRIVATE TX)
+
+
+
 hardhat deploy a contract to arbitrum L2 network:
 edit hardhat.config.ts, add network, and imports
 
