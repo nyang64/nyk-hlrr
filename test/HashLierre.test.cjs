@@ -677,4 +677,418 @@ describe("HashLierre", function () {
       expect(bobBalance).to.equal(500n * ONE);
     });
   });
+
+  describe("Presale", function () {
+    let mockUSDC;
+    const USDC_DECIMALS = 6n;
+    const ONE_USDC = 10n ** USDC_DECIMALS;
+
+    // Presale rate: 1 HLRR = $0.075 USDC
+    // So 1 USDC = 13.333... HLRR
+    // In contract: hlrrAmount = usdcAmount * 4000 / 3
+    const PRESALE_RATE_NUMERATOR = 4000n;
+    const PRESALE_RATE_DENOMINATOR = 3n;
+
+    beforeEach(async () => {
+      // Deploy a mock ERC20 for USDC
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      mockUSDC = await MockERC20.deploy("USD Coin", "USDC", 6);
+      await mockUSDC.deployed();
+
+      // Mint USDC to alice and bob
+      await mockUSDC.mint(alice.address, 100_000n * ONE_USDC);
+      await mockUSDC.mint(bob.address, 100_000n * ONE_USDC);
+    });
+
+    describe("Configuration", function () {
+      it("owner can configure presale", async () => {
+        await expect(
+          token.configurePresale(
+            mockUSDC.address,
+            owner.address,
+            50n * ONE_USDC,     // min: 50 USDC
+            50_000n * ONE_USDC, // max: 50,000 USDC
+            1_000_000n * ONE_USDC // hard cap: 1M USDC
+          )
+        ).to.emit(token, "PresaleConfigured")
+          .withArgs(mockUSDC.address, owner.address, 50n * ONE_USDC, 50_000n * ONE_USDC, 1_000_000n * ONE_USDC);
+
+        expect(await token.presalePaymentToken()).to.equal(mockUSDC.address);
+        expect(await token.presaleWallet()).to.equal(owner.address);
+        expect(await token.presaleMinPurchase()).to.equal(50n * ONE_USDC);
+        expect(await token.presaleMaxPurchase()).to.equal(50_000n * ONE_USDC);
+        expect(await token.presaleHardCap()).to.equal(1_000_000n * ONE_USDC);
+      });
+
+      it("non-owner cannot configure presale", async () => {
+        await expect(
+          token.connect(alice).configurePresale(
+            mockUSDC.address,
+            owner.address,
+            50n * ONE_USDC,
+            50_000n * ONE_USDC,
+            1_000_000n * ONE_USDC
+          )
+        ).to.be.reverted;
+      });
+
+      it("cannot configure with zero payment token address", async () => {
+        await expect(
+          token.configurePresale(
+            ethers.constants.AddressZero,
+            owner.address,
+            50n * ONE_USDC,
+            50_000n * ONE_USDC,
+            1_000_000n * ONE_USDC
+          )
+        ).to.be.revertedWith("Invalid payment token");
+      });
+
+      it("cannot configure with zero presale wallet address", async () => {
+        await expect(
+          token.configurePresale(
+            mockUSDC.address,
+            ethers.constants.AddressZero,
+            50n * ONE_USDC,
+            50_000n * ONE_USDC,
+            1_000_000n * ONE_USDC
+          )
+        ).to.be.revertedWith("Invalid presale wallet");
+      });
+
+      it("cannot configure with max < min purchase", async () => {
+        await expect(
+          token.configurePresale(
+            mockUSDC.address,
+            owner.address,
+            100n * ONE_USDC,
+            50n * ONE_USDC, // max < min
+            1_000_000n * ONE_USDC
+          )
+        ).to.be.revertedWith("Max must be >= min");
+      });
+
+      it("owner can activate/deactivate presale", async () => {
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+
+        await expect(token.setPresaleActive(true))
+          .to.emit(token, "PresaleStatusChanged")
+          .withArgs(true);
+
+        expect(await token.presaleActive()).to.equal(true);
+
+        await expect(token.setPresaleActive(false))
+          .to.emit(token, "PresaleStatusChanged")
+          .withArgs(false);
+
+        expect(await token.presaleActive()).to.equal(false);
+      });
+
+      it("cannot activate presale without configuration", async () => {
+        await expect(
+          token.setPresaleActive(true)
+        ).to.be.revertedWith("Presale not configured");
+      });
+
+      it("non-owner cannot activate presale", async () => {
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+
+        await expect(
+          token.connect(alice).setPresaleActive(true)
+        ).to.be.reverted;
+      });
+    });
+
+    describe("Purchasing", function () {
+      beforeEach(async () => {
+        // Configure and activate presale
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+        await token.setPresaleActive(true);
+      });
+
+      it("user can buy HLRR with USDC", async () => {
+        const usdcAmount = 100n * ONE_USDC;
+        const expectedHLRR = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+
+        await mockUSDC.connect(alice).approve(token.address, usdcAmount);
+
+        const aliceHLRRBefore = await token.balanceOf(alice.address);
+        const ownerUSDCBefore = await mockUSDC.balanceOf(owner.address);
+
+        await expect(token.connect(alice).buyPresale(usdcAmount))
+          .to.emit(token, "PresalePurchase")
+          .withArgs(alice.address, usdcAmount, expectedHLRR);
+
+        const aliceHLRRAfter = await token.balanceOf(alice.address);
+        const ownerUSDCAfter = await mockUSDC.balanceOf(owner.address);
+
+        // Alice receives HLRR
+        expect(BigInt(aliceHLRRAfter.toString()) - BigInt(aliceHLRRBefore.toString())).to.equal(expectedHLRR);
+
+        // Owner receives USDC
+        expect(BigInt(ownerUSDCAfter.toString()) - BigInt(ownerUSDCBefore.toString())).to.equal(usdcAmount);
+      });
+
+      it("calculates correct HLRR amount for various USDC amounts", async () => {
+        const testAmounts = [50n, 100n, 500n, 1000n, 10000n];
+
+        for (const amount of testAmounts) {
+          const usdcAmount = amount * ONE_USDC;
+          const expectedHLRR = await token.calculatePresaleReturn(usdcAmount);
+          const calculatedHLRR = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+
+          expect(expectedHLRR).to.equal(calculatedHLRR);
+        }
+      });
+
+      it("tracks presale statistics correctly", async () => {
+        const usdcAmount = 100n * ONE_USDC;
+        const expectedHLRR = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+
+        await mockUSDC.connect(alice).approve(token.address, usdcAmount);
+        await token.connect(alice).buyPresale(usdcAmount);
+
+        expect(await token.presaleTotalRaised()).to.equal(usdcAmount);
+        expect(await token.presaleTotalSold()).to.equal(expectedHLRR);
+        expect(await token.presaleContributions(alice.address)).to.equal(usdcAmount);
+
+        // Second purchase
+        await mockUSDC.connect(alice).approve(token.address, usdcAmount);
+        await token.connect(alice).buyPresale(usdcAmount);
+
+        expect(await token.presaleTotalRaised()).to.equal(usdcAmount * 2n);
+        expect(await token.presaleContributions(alice.address)).to.equal(usdcAmount * 2n);
+      });
+
+      it("multiple users can participate", async () => {
+        const aliceAmount = 100n * ONE_USDC;
+        const bobAmount = 200n * ONE_USDC;
+
+        await mockUSDC.connect(alice).approve(token.address, aliceAmount);
+        await mockUSDC.connect(bob).approve(token.address, bobAmount);
+
+        await token.connect(alice).buyPresale(aliceAmount);
+        await token.connect(bob).buyPresale(bobAmount);
+
+        expect(await token.presaleTotalRaised()).to.equal(aliceAmount + bobAmount);
+        expect(await token.presaleContributions(alice.address)).to.equal(aliceAmount);
+        expect(await token.presaleContributions(bob.address)).to.equal(bobAmount);
+      });
+
+      it("getPresaleStats returns correct data", async () => {
+        const usdcAmount = 100n * ONE_USDC;
+        const expectedHLRR = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+
+        await mockUSDC.connect(alice).approve(token.address, usdcAmount);
+        await token.connect(alice).buyPresale(usdcAmount);
+
+        const stats = await token.getPresaleStats();
+
+        expect(stats.isActive).to.equal(true);
+        expect(stats.totalRaised).to.equal(usdcAmount);
+        expect(stats.totalSold).to.equal(expectedHLRR);
+        expect(stats.hardCap).to.equal(1_000_000n * ONE_USDC);
+        expect(stats.remainingCap).to.equal(1_000_000n * ONE_USDC - usdcAmount);
+      });
+    });
+
+    describe("Purchase Limits", function () {
+      beforeEach(async () => {
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,     // min: 50 USDC
+          50_000n * ONE_USDC, // max: 50,000 USDC
+          1_000_000n * ONE_USDC // hard cap: 1M USDC
+        );
+        await token.setPresaleActive(true);
+      });
+
+      it("cannot buy below minimum", async () => {
+        const belowMin = 49n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, belowMin);
+
+        await expect(
+          token.connect(alice).buyPresale(belowMin)
+        ).to.be.revertedWith("Below minimum purchase");
+      });
+
+      it("can buy at exactly minimum", async () => {
+        const exactMin = 50n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, exactMin);
+
+        await expect(
+          token.connect(alice).buyPresale(exactMin)
+        ).to.not.be.reverted;
+      });
+
+      it("cannot buy above maximum", async () => {
+        const aboveMax = 50_001n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, aboveMax);
+
+        await expect(
+          token.connect(alice).buyPresale(aboveMax)
+        ).to.be.revertedWith("Above maximum purchase");
+      });
+
+      it("can buy at exactly maximum", async () => {
+        const exactMax = 50_000n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, exactMax);
+
+        await expect(
+          token.connect(alice).buyPresale(exactMax)
+        ).to.not.be.reverted;
+      });
+
+      it("cannot exceed hard cap", async () => {
+        // Configure with a small hard cap for testing
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          100n * ONE_USDC // hard cap: 100 USDC
+        );
+
+        const purchase1 = 60n * ONE_USDC;
+        const purchase2 = 50n * ONE_USDC; // Would exceed 100 USDC hard cap
+
+        await mockUSDC.connect(alice).approve(token.address, purchase1 + purchase2);
+
+        await token.connect(alice).buyPresale(purchase1);
+
+        await expect(
+          token.connect(alice).buyPresale(purchase2)
+        ).to.be.revertedWith("Exceeds hard cap");
+      });
+
+      it("cannot buy when presale is inactive", async () => {
+        await token.setPresaleActive(false);
+
+        const amount = 100n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, amount);
+
+        await expect(
+          token.connect(alice).buyPresale(amount)
+        ).to.be.revertedWith("Presale not active");
+      });
+
+      it("cannot exceed max supply via presale", async () => {
+        // Mint close to max supply
+        const max = BigInt((await token.MAX_SUPPLY()).toString());
+        const current = BigInt((await token.totalSupply()).toString());
+        const remaining = max - current;
+
+        // Leave only a small amount available
+        if (remaining > 100n * ONE) {
+          await token.mint(owner.address, remaining - 100n * ONE, "fill");
+        }
+
+        // Try to buy more HLRR than remaining supply allows
+        const largeAmount = 10_000n * ONE_USDC; // Would mint ~133,333 HLRR
+        await mockUSDC.connect(alice).approve(token.address, largeAmount);
+
+        await expect(
+          token.connect(alice).buyPresale(largeAmount)
+        ).to.be.revertedWith("Exceeds max supply");
+      });
+    });
+
+    describe("Edge Cases", function () {
+      beforeEach(async () => {
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+        await token.setPresaleActive(true);
+      });
+
+      it("requires USDC approval before purchase", async () => {
+        const amount = 100n * ONE_USDC;
+        // No approval
+
+        await expect(
+          token.connect(alice).buyPresale(amount)
+        ).to.be.reverted;
+      });
+
+      it("fails with insufficient USDC balance", async () => {
+        const amount = 200_000n * ONE_USDC; // More than alice has
+        await mockUSDC.connect(alice).approve(token.address, amount);
+
+        await expect(
+          token.connect(alice).buyPresale(amount)
+        ).to.be.reverted;
+      });
+
+      it("presale can be reconfigured by owner", async () => {
+        // New configuration
+        await token.configurePresale(
+          mockUSDC.address,
+          bob.address, // Different wallet
+          100n * ONE_USDC, // Higher minimum
+          10_000n * ONE_USDC, // Lower maximum
+          500_000n * ONE_USDC // Lower hard cap
+        );
+
+        expect(await token.presaleWallet()).to.equal(bob.address);
+        expect(await token.presaleMinPurchase()).to.equal(100n * ONE_USDC);
+        expect(await token.presaleMaxPurchase()).to.equal(10_000n * ONE_USDC);
+        expect(await token.presaleHardCap()).to.equal(500_000n * ONE_USDC);
+      });
+
+      it("user contribution is tracked across multiple purchases", async () => {
+        const amount1 = 100n * ONE_USDC;
+        const amount2 = 200n * ONE_USDC;
+
+        await mockUSDC.connect(alice).approve(token.address, amount1 + amount2);
+
+        await token.connect(alice).buyPresale(amount1);
+        expect(await token.getPresaleContribution(alice.address)).to.equal(amount1);
+
+        await token.connect(alice).buyPresale(amount2);
+        expect(await token.getPresaleContribution(alice.address)).to.equal(amount1 + amount2);
+      });
+
+      it("USDC goes to presale wallet, not contract", async () => {
+        const amount = 100n * ONE_USDC;
+        await mockUSDC.connect(alice).approve(token.address, amount);
+
+        const contractUSDCBefore = await mockUSDC.balanceOf(token.address);
+        const walletUSDCBefore = await mockUSDC.balanceOf(owner.address);
+
+        await token.connect(alice).buyPresale(amount);
+
+        const contractUSDCAfter = await mockUSDC.balanceOf(token.address);
+        const walletUSDCAfter = await mockUSDC.balanceOf(owner.address);
+
+        // Contract should not hold USDC
+        expect(contractUSDCAfter).to.equal(contractUSDCBefore);
+
+        // Presale wallet receives USDC
+        expect(BigInt(walletUSDCAfter.toString()) - BigInt(walletUSDCBefore.toString())).to.equal(amount);
+      });
+    });
+  });
 });

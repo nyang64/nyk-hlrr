@@ -2,14 +2,16 @@
 pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
-/// @title Hash Lierre (HLRR) — ERC20 token with staking, adjustable APR, emergency mode and Merkle airdrop
+/// @title Hash Lierre (HLRR) — ERC20 token with staking, adjustable APR, emergency mode, Merkle airdrop, and presale
 /// @author Nyk Labs
 /// @notice HLRR is an ERC20 token with 8 decimals that supports staking with auto-compounding rewards,
-///         owner-controlled APR, emergency withdrawals, and Merkle-proof based airdrops.
+///         owner-controlled APR, emergency withdrawals, Merkle-proof based airdrops, and USDC presale.
 /// @dev
 ///  - Token uses 8 decimals.
 ///  - APR is expressed in basis points (1% = 100, 12% = 1200).
@@ -18,8 +20,10 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 ///  - Total supply is capped by MAX_SUPPLY.
 ///  - Emergency mode disables rewards and allows principal-only withdrawals.
 ///  - Lock period is tracked per-user from their FIRST stake, not reset on subsequent stakes.
+///  - Presale allows users to purchase HLRR with USDC at a fixed rate.
 ///  - This contract uses OpenZeppelin ERC20, Ownable, and ReentrancyGuard.
 contract HashLierre is ERC20, Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
 
     // =============================================================
     //                           CONSTANTS
@@ -43,6 +47,13 @@ contract HashLierre is ERC20, Ownable, ReentrancyGuard {
 
     /// @notice Minimum interval between APR changes (1 year)
     uint256 public constant MIN_APR_CHANGE_INTERVAL = 365 days;
+
+    /// @notice Presale price: 1 HLRR = 0.075 USDC
+    /// @dev Rate calculation: HLRR (8 decimals) per USDC (6 decimals)
+    /// @dev 1 USDC = 1/0.075 HLRR = 13.333... HLRR
+    /// @dev In base units: hlrrAmount = usdcAmount * 4000 / 3
+    uint256 public constant PRESALE_RATE_NUMERATOR = 4000;
+    uint256 public constant PRESALE_RATE_DENOMINATOR = 3;
 
     // =============================================================
     //                           STRUCTS
@@ -92,6 +103,37 @@ contract HashLierre is ERC20, Ownable, ReentrancyGuard {
     mapping(address => bool) public airdropClaimed;
 
     // =============================================================
+    //                      PRESALE STORAGE
+    // =============================================================
+
+    /// @notice Whether presale is currently active
+    bool public presaleActive = false;
+
+    /// @notice USDC token contract address (set by owner)
+    IERC20 public presalePaymentToken;
+
+    /// @notice Wallet that receives presale USDC payments
+    address public presaleWallet;
+
+    /// @notice Minimum USDC amount per purchase (6 decimals)
+    uint256 public presaleMinPurchase = 50 * 1e6; // 50 USDC
+
+    /// @notice Maximum USDC amount per purchase (6 decimals)
+    uint256 public presaleMaxPurchase = 50_000 * 1e6; // 50,000 USDC
+
+    /// @notice Maximum total USDC that can be raised in presale
+    uint256 public presaleHardCap = 1_000_000 * 1e6; // 1M USDC
+
+    /// @notice Total USDC raised in presale so far
+    uint256 public presaleTotalRaised;
+
+    /// @notice Total HLRR sold in presale so far
+    uint256 public presaleTotalSold;
+
+    /// @notice Tracks total USDC contributed per user
+    mapping(address => uint256) public presaleContributions;
+
+    // =============================================================
     //                           EVENTS
     // =============================================================
 
@@ -105,6 +147,9 @@ contract HashLierre is ERC20, Ownable, ReentrancyGuard {
     event EmergencyUnstake(address indexed user, uint256 amount);
     event MerkleRootSet(bytes32 indexed merkleRoot);
     event AirdropClaimed(address indexed user, uint256 amount);
+    event PresaleConfigured(address indexed paymentToken, address indexed wallet, uint256 minPurchase, uint256 maxPurchase, uint256 hardCap);
+    event PresaleStatusChanged(bool active);
+    event PresalePurchase(address indexed buyer, uint256 usdcAmount, uint256 hlrrAmount);
 
     // =============================================================
     //                           CONSTRUCTOR
@@ -356,6 +401,110 @@ contract HashLierre is ERC20, Ownable, ReentrancyGuard {
     /// @notice Returns whether a user has already claimed their airdrop
     function hasClaimedAirdrop(address user) external view returns (bool) {
         return airdropClaimed[user];
+    }
+
+    // =============================================================
+    //                          PRESALE
+    // =============================================================
+
+    /// @notice Configure presale parameters (owner only)
+    /// @param _paymentToken USDC contract address on BASE
+    /// @param _presaleWallet Wallet to receive USDC payments
+    /// @param _minPurchase Minimum USDC per transaction (6 decimals)
+    /// @param _maxPurchase Maximum USDC per transaction (6 decimals)
+    /// @param _hardCap Maximum total USDC to raise
+    function configurePresale(
+        address _paymentToken,
+        address _presaleWallet,
+        uint256 _minPurchase,
+        uint256 _maxPurchase,
+        uint256 _hardCap
+    ) external onlyOwner {
+        require(_paymentToken != address(0), "Invalid payment token");
+        require(_presaleWallet != address(0), "Invalid presale wallet");
+        require(_minPurchase > 0, "Min purchase must be > 0");
+        require(_maxPurchase >= _minPurchase, "Max must be >= min");
+        require(_hardCap > 0, "Hard cap must be > 0");
+
+        presalePaymentToken = IERC20(_paymentToken);
+        presaleWallet = _presaleWallet;
+        presaleMinPurchase = _minPurchase;
+        presaleMaxPurchase = _maxPurchase;
+        presaleHardCap = _hardCap;
+
+        emit PresaleConfigured(_paymentToken, _presaleWallet, _minPurchase, _maxPurchase, _hardCap);
+    }
+
+    /// @notice Enable or disable presale (owner only)
+    /// @param _active Whether presale should be active
+    function setPresaleActive(bool _active) external onlyOwner {
+        require(address(presalePaymentToken) != address(0), "Presale not configured");
+        require(presaleWallet != address(0), "Presale wallet not set");
+        presaleActive = _active;
+        emit PresaleStatusChanged(_active);
+    }
+
+    /// @notice Purchase HLRR tokens with USDC
+    /// @dev User must have approved this contract to spend their USDC
+    /// @param usdcAmount Amount of USDC to spend (6 decimals)
+    function buyPresale(uint256 usdcAmount) external nonReentrant {
+        require(presaleActive, "Presale not active");
+        require(usdcAmount >= presaleMinPurchase, "Below minimum purchase");
+        require(usdcAmount <= presaleMaxPurchase, "Above maximum purchase");
+        require(presaleTotalRaised + usdcAmount <= presaleHardCap, "Exceeds hard cap");
+
+        // Calculate HLRR amount: hlrrAmount = usdcAmount * 4000 / 3
+        // This gives ~13.33 HLRR per USDC (1 HLRR = $0.075)
+        uint256 hlrrAmount = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+
+        require(totalSupply() + hlrrAmount <= MAX_SUPPLY, "Exceeds max supply");
+
+        // Transfer USDC from buyer to presale wallet
+        presalePaymentToken.safeTransferFrom(msg.sender, presaleWallet, usdcAmount);
+
+        // Mint HLRR to buyer
+        _mint(msg.sender, hlrrAmount);
+
+        // Update presale stats
+        presaleTotalRaised += usdcAmount;
+        presaleTotalSold += hlrrAmount;
+        presaleContributions[msg.sender] += usdcAmount;
+
+        emit PresalePurchase(msg.sender, usdcAmount, hlrrAmount);
+    }
+
+    /// @notice Calculate how much HLRR a user would receive for a given USDC amount
+    /// @param usdcAmount Amount of USDC (6 decimals)
+    /// @return hlrrAmount Amount of HLRR (8 decimals)
+    function calculatePresaleReturn(uint256 usdcAmount) external pure returns (uint256 hlrrAmount) {
+        hlrrAmount = (usdcAmount * PRESALE_RATE_NUMERATOR) / PRESALE_RATE_DENOMINATOR;
+    }
+
+    /// @notice Get presale statistics
+    /// @return isActive Whether presale is currently active
+    /// @return totalRaised Total USDC raised
+    /// @return totalSold Total HLRR sold
+    /// @return hardCap Maximum USDC that can be raised
+    /// @return remainingCap How much more USDC can be raised
+    function getPresaleStats() external view returns (
+        bool isActive,
+        uint256 totalRaised,
+        uint256 totalSold,
+        uint256 hardCap,
+        uint256 remainingCap
+    ) {
+        isActive = presaleActive;
+        totalRaised = presaleTotalRaised;
+        totalSold = presaleTotalSold;
+        hardCap = presaleHardCap;
+        remainingCap = presaleHardCap > presaleTotalRaised ? presaleHardCap - presaleTotalRaised : 0;
+    }
+
+    /// @notice Get a user's presale contribution
+    /// @param user Address to check
+    /// @return contribution Total USDC contributed by this user
+    function getPresaleContribution(address user) external view returns (uint256 contribution) {
+        contribution = presaleContributions[user];
     }
 
     // =============================================================
