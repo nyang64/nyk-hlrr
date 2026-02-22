@@ -362,9 +362,10 @@ describe("HashLierre", function () {
   });
 
   it("cannot exceed max supply via rewards", async () => {
-    const max = await token.MAX_SUPPLY();
-    const current = await token.totalSupply();
-    await token.mint(owner.address, max - current, "cap");
+    const max = BigInt((await token.MAX_SUPPLY()).toString());
+    const current = BigInt((await token.totalSupply()).toString());
+    const toMint = max - current;
+    await token.mint(owner.address, toMint, "cap");
 
     await token.connect(alice).approve(token.address, 1_000n * ONE);
     await token.connect(alice).stake(1_000n * ONE);
@@ -515,7 +516,7 @@ describe("HashLierre", function () {
       const config = await token.getContractConfig();
 
       expect(config.currentAPR).to.equal(1200n);
-      expect(config.maxSupply).to.equal(60_000_000n * ONE);
+      expect(config.maxSupply).to.equal(120_000_000n * ONE);
       expect(config.minStakePeriod).to.equal(14n * 24n * 60n * 60n);
       expect(config.minStakeAmount).to.equal(100n * ONE);
       expect(config.maxAPR).to.equal(1200n); // 12%
@@ -811,6 +812,73 @@ describe("HashLierre", function () {
       });
     });
 
+    describe("Presale Rate", function () {
+      it("owner can change presale rate", async () => {
+        // Change to $0.10/HLRR (10 HLRR per $1)
+        await expect(token.setPresaleRate(1000n, 1n))
+          .to.emit(token, "PresaleRateChanged");
+
+        expect(await token.presaleRateNumerator()).to.equal(1000n);
+        expect(await token.presaleRateDenominator()).to.equal(1n);
+      });
+
+      it("non-owner cannot change presale rate", async () => {
+        await expect(
+          token.connect(alice).setPresaleRate(1000n, 1n)
+        ).to.be.reverted;
+      });
+
+      it("cannot set zero numerator", async () => {
+        await expect(
+          token.setPresaleRate(0n, 1n)
+        ).to.be.revertedWith("Numerator must be > 0");
+      });
+
+      it("cannot set zero denominator", async () => {
+        await expect(
+          token.setPresaleRate(1000n, 0n)
+        ).to.be.revertedWith("Denominator must be > 0");
+      });
+
+      it("getPresalePrice returns correct price", async () => {
+        // Default rate: numerator=4000, denominator=3
+        // priceUsd = (1e8 * 3) / 4000 = 75000
+        // In USDC terms (6 decimals): 75000 = $0.075
+        const defaultPrice = await token.getPresalePrice();
+        expect(defaultPrice).to.equal(75000n); // $0.075 with 6 decimals
+      });
+
+      it("changed rate affects purchase calculations", async () => {
+        // Deploy mock USDC for this test
+        const MockERC20 = await ethers.getContractFactory("MockERC20");
+        const testUSDC = await MockERC20.deploy("USD Coin", "USDC", 6);
+        await testUSDC.deployed();
+        await testUSDC.mint(alice.address, 100_000n * ONE_USDC);
+
+        await token.configurePresale(
+          testUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+        await token.mint(owner.address, 10_000_000n * ONE, "presale");
+        await token.setPresaleActive(true);
+
+        // Default rate: 100 USDC -> 100 * 4000 / 3 = 133333.33 HLRR (with 8 decimals adjustment)
+        const amount1 = BigInt((await token.calculatePresaleReturn(100n * ONE_USDC)).toString());
+
+        // Change to $0.15/HLRR (2000/3 => ~6.67 HLRR per $1)
+        await token.setPresaleRate(2000n, 3n);
+
+        // New rate: 100 USDC -> 100 * 2000 / 3 = 66666.67 HLRR
+        const amount2 = BigInt((await token.calculatePresaleReturn(100n * ONE_USDC)).toString());
+
+        // Second amount should be half of first (since price doubled from $0.075 to $0.15)
+        expect(amount2).to.equal(amount1 / 2n);
+      });
+    });
+
     describe("Purchasing", function () {
       beforeEach(async () => {
         // Configure and activate presale
@@ -821,6 +889,8 @@ describe("HashLierre", function () {
           50_000n * ONE_USDC,
           1_000_000n * ONE_USDC
         );
+        // Pre-mint HLRR to presale wallet (owner) for presale distribution
+        await token.mint(owner.address, 10_000_000n * ONE, "presale");
         await token.setPresaleActive(true);
       });
 
@@ -919,6 +989,8 @@ describe("HashLierre", function () {
           50_000n * ONE_USDC, // max: 50,000 USDC
           1_000_000n * ONE_USDC // hard cap: 1M USDC
         );
+        // Pre-mint HLRR to presale wallet (owner) for presale distribution
+        await token.mint(owner.address, 10_000_000n * ONE, "presale");
         await token.setPresaleActive(true);
       });
 
@@ -991,24 +1063,31 @@ describe("HashLierre", function () {
         ).to.be.revertedWith("Presale not active");
       });
 
-      it("cannot exceed max supply via presale", async () => {
-        // Mint close to max supply
-        const max = BigInt((await token.MAX_SUPPLY()).toString());
-        const current = BigInt((await token.totalSupply()).toString());
-        const remaining = max - current;
+      it("cannot buy more than presale wallet balance", async () => {
+        // Deploy a fresh token to test insufficient balance
+        const Factory = await ethers.getContractFactory("HashLierre");
+        const freshToken = await Factory.deploy();
+        await freshToken.deployed();
 
-        // Leave only a small amount available
-        if (remaining > 100n * ONE) {
-          await token.mint(owner.address, remaining - 100n * ONE, "fill");
-        }
+        // Configure presale with a small HLRR balance
+        await freshToken.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+        // Mint only a small amount to presale wallet
+        await freshToken.mint(owner.address, 100n * ONE, "small presale");
+        await freshToken.setPresaleActive(true);
 
-        // Try to buy more HLRR than remaining supply allows
-        const largeAmount = 10_000n * ONE_USDC; // Would mint ~133,333 HLRR
-        await mockUSDC.connect(alice).approve(token.address, largeAmount);
+        // Try to buy more HLRR than presale wallet has
+        const largeAmount = 10_000n * ONE_USDC; // Would need ~133,333 HLRR
+        await mockUSDC.connect(alice).approve(freshToken.address, largeAmount);
 
         await expect(
-          token.connect(alice).buyPresale(largeAmount)
-        ).to.be.revertedWith("Exceeds max supply");
+          freshToken.connect(alice).buyPresale(largeAmount)
+        ).to.be.revertedWith("Insufficient presale HLRR balance");
       });
     });
 
@@ -1021,6 +1100,8 @@ describe("HashLierre", function () {
           50_000n * ONE_USDC,
           1_000_000n * ONE_USDC
         );
+        // Pre-mint HLRR to presale wallet (owner) for presale distribution
+        await token.mint(owner.address, 10_000_000n * ONE, "presale");
         await token.setPresaleActive(true);
       });
 
@@ -1088,6 +1169,207 @@ describe("HashLierre", function () {
 
         // Presale wallet receives USDC
         expect(BigInt(walletUSDCAfter.toString()) - BigInt(walletUSDCBefore.toString())).to.equal(amount);
+      });
+    });
+
+    describe("ETH Presale", function () {
+      let mockUSDC;
+      let mockPriceFeed;
+      const USDC_DECIMALS = 6n;
+      const ONE_USDC = 10n ** USDC_DECIMALS;
+      const ETH_PRICE = 250000000000n; // $2500 with 8 decimals
+
+      beforeEach(async () => {
+        // Deploy mock USDC
+        const MockERC20 = await ethers.getContractFactory("MockERC20");
+        mockUSDC = await MockERC20.deploy("USD Coin", "USDC", 6);
+        await mockUSDC.deployed();
+
+        // Deploy mock Chainlink price feed ($2500 ETH)
+        const MockAggregator = await ethers.getContractFactory("MockChainlinkAggregator");
+        mockPriceFeed = await MockAggregator.deploy(ETH_PRICE, 8);
+        await mockPriceFeed.deployed();
+
+        // Configure presale
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+
+        // Pre-mint HLRR to presale wallet (owner) for presale distribution
+        await token.mint(owner.address, 10_000_000n * ONE, "presale");
+
+        // Set ETH price feed
+        await token.setEthPriceFeed(mockPriceFeed.address);
+
+        // Activate presale
+        await token.setPresaleActive(true);
+      });
+
+      it("owner can set ETH price feed", async () => {
+        const MockAggregator = await ethers.getContractFactory("MockChainlinkAggregator");
+        const newPriceFeed = await MockAggregator.deploy(300000000000n, 8);
+        await newPriceFeed.deployed();
+
+        await expect(token.setEthPriceFeed(newPriceFeed.address))
+          .to.emit(token, "EthPriceFeedSet")
+          .withArgs(newPriceFeed.address);
+
+        expect(await token.ethUsdPriceFeed()).to.equal(newPriceFeed.address);
+      });
+
+      it("non-owner cannot set ETH price feed", async () => {
+        await expect(
+          token.connect(alice).setEthPriceFeed(mockPriceFeed.address)
+        ).to.be.reverted;
+      });
+
+      it("cannot set zero address as price feed", async () => {
+        await expect(
+          token.setEthPriceFeed(ethers.constants.AddressZero)
+        ).to.be.revertedWith("Invalid price feed");
+      });
+
+      it("getEthPrice returns correct price", async () => {
+        const price = await token.getEthPrice();
+        expect(price).to.equal(ETH_PRICE);
+      });
+
+      it("user can buy HLRR with ETH", async () => {
+        const ethAmount = ethers.utils.parseEther("1"); // 1 ETH
+        // At $2500/ETH, 1 ETH = $2500 = 2500 USDC (6 decimals) = 2500000000
+        // HLRR = 2500000000 * 4000 / 3 = 3333333333333 (8 decimals) = ~33,333 HLRR
+        const expectedUsdValue = 2500n * ONE_USDC;
+        const expectedHLRR = (expectedUsdValue * 4000n) / 3n;
+
+        const aliceHLRRBefore = await token.balanceOf(alice.address);
+        const ownerEthBefore = await ethers.provider.getBalance(owner.address);
+
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: ethAmount })
+        ).to.emit(token, "PresalePurchaseWithEth");
+
+        const aliceHLRRAfter = await token.balanceOf(alice.address);
+        const ownerEthAfter = await ethers.provider.getBalance(owner.address);
+
+        // Alice receives HLRR
+        expect(BigInt(aliceHLRRAfter.toString()) - BigInt(aliceHLRRBefore.toString())).to.equal(expectedHLRR);
+
+        // Owner receives ETH
+        expect(BigInt(ownerEthAfter.toString()) - BigInt(ownerEthBefore.toString())).to.equal(BigInt(ethAmount.toString()));
+      });
+
+      it("tracks ETH raised separately", async () => {
+        const ethAmount = ethers.utils.parseEther("1");
+
+        await token.connect(alice).buyPresaleWithEth({ value: ethAmount });
+
+        expect(await token.presaleTotalEthRaised()).to.equal(ethAmount);
+      });
+
+      it("calculatePresaleReturnEth returns correct values", async () => {
+        const ethAmount = ethers.utils.parseEther("1");
+        const result = await token.calculatePresaleReturnEth(ethAmount);
+
+        const expectedUsdValue = 2500n * ONE_USDC;
+        const expectedHLRR = (expectedUsdValue * 4000n) / 3n;
+
+        expect(result.usdValue).to.equal(expectedUsdValue);
+        expect(result.hlrrAmount).to.equal(expectedHLRR);
+      });
+
+      it("cannot buy with ETH when presale inactive", async () => {
+        await token.setPresaleActive(false);
+
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: ethers.utils.parseEther("1") })
+        ).to.be.revertedWith("Presale not active");
+      });
+
+      it("cannot buy with zero ETH", async () => {
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: 0 })
+        ).to.be.revertedWith("Must send ETH");
+      });
+
+      it("cannot buy with ETH below minimum USD value", async () => {
+        // Minimum is 50 USDC, at $2500/ETH need at least 0.02 ETH
+        const tooLowEth = ethers.utils.parseEther("0.01"); // $25 worth
+
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: tooLowEth })
+        ).to.be.revertedWith("Below minimum purchase");
+      });
+
+      it("cannot buy with ETH above maximum USD value", async () => {
+        // Maximum is 50,000 USDC, at $2500/ETH that's 20 ETH
+        const tooHighEth = ethers.utils.parseEther("21"); // $52,500 worth
+
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: tooHighEth })
+        ).to.be.revertedWith("Above maximum purchase");
+      });
+
+      it("cannot buy with ETH without price feed set", async () => {
+        // Deploy fresh token without price feed
+        const Factory = await ethers.getContractFactory("HashLierre");
+        const newToken = await Factory.deploy();
+        await newToken.deployed();
+
+        await newToken.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          1_000_000n * ONE_USDC
+        );
+        await newToken.setPresaleActive(true);
+
+        await expect(
+          newToken.connect(alice).buyPresaleWithEth({ value: ethers.utils.parseEther("1") })
+        ).to.be.revertedWith("ETH price feed not set");
+      });
+
+      it("rejects stale price data", async () => {
+        // Set updatedAt to 2 hours ago
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 7200;
+        await mockPriceFeed.setUpdatedAt(twoHoursAgo);
+
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: ethers.utils.parseEther("1") })
+        ).to.be.revertedWith("Stale price");
+      });
+
+      it("ETH contribution counts toward hard cap", async () => {
+        // Set a low hard cap for testing
+        await token.configurePresale(
+          mockUSDC.address,
+          owner.address,
+          50n * ONE_USDC,
+          50_000n * ONE_USDC,
+          3000n * ONE_USDC // $3000 hard cap
+        );
+
+        // Buy with 1 ETH ($2500)
+        await token.connect(alice).buyPresaleWithEth({ value: ethers.utils.parseEther("1") });
+
+        // Try to buy another 1 ETH - should exceed hard cap
+        await expect(
+          token.connect(alice).buyPresaleWithEth({ value: ethers.utils.parseEther("1") })
+        ).to.be.revertedWith("Exceeds hard cap");
+      });
+
+      it("ETH goes to presale wallet", async () => {
+        const ethAmount = ethers.utils.parseEther("1");
+        const walletEthBefore = await ethers.provider.getBalance(owner.address);
+
+        await token.connect(alice).buyPresaleWithEth({ value: ethAmount });
+
+        const walletEthAfter = await ethers.provider.getBalance(owner.address);
+        expect(BigInt(walletEthAfter.toString()) - BigInt(walletEthBefore.toString())).to.equal(BigInt(ethAmount.toString()));
       });
     });
   });
